@@ -6,6 +6,7 @@ import {
   DescribeDBInstancesCommand,
   ListTagsForResourceCommand,
   DescribeReservedDBInstancesCommand,
+  DescribeDBInstancesCommandInput,
 } from '@aws-sdk/client-rds';
 import { RDSPurchaseMethod } from '../purchaseMethod';
 
@@ -69,27 +70,44 @@ export const loadGroupedCalculationUnitsByDBInstances = async (
 };
 
 export const loadDBInstances = async (): Promise<DBInstance[]> => {
-  const describeDBInstancesResult = await client.send(
-    new DescribeDBInstancesCommand({}),
-  );
-  const sdkInstances = describeDBInstancesResult.DBInstances || [];
-  return Promise.all(
-    sdkInstances.map(async (instance): Promise<DBInstance> => {
-      const listTagsResult = await client.send(
-        new ListTagsForResourceCommand({
-          ResourceName: instance.DBInstanceArn,
-        }),
-      );
-      listTagsResult.TagList;
-      return {
-        instanceIdentifier: instance.DBInstanceIdentifier!,
-        instanceClass: instance.DBInstanceClass!,
-        engine: instance.Engine!,
-        multiAZ: instance.MultiAZ!,
-        purchaseMethod: getPurchaseMethod(listTagsResult.TagList!),
-      };
-    }),
-  );
+  let result: DBInstance[] = [];
+  let marker: string | undefined = undefined;
+
+  while (true) {
+    const inputs: DescribeDBInstancesCommandInput = {
+      MaxRecords: 100,
+      ...(typeof marker === 'string' ? { Marker: marker } : {}),
+    };
+    const describeDBInstancesResult = await client.send(
+      new DescribeDBInstancesCommand(inputs),
+    );
+    const sdkInstances = describeDBInstancesResult.DBInstances || [];
+    const instances = await Promise.all(
+      sdkInstances.map(async (instance): Promise<DBInstance> => {
+        const listTagsResult = await client.send(
+          new ListTagsForResourceCommand({
+            ResourceName: instance.DBInstanceArn,
+          }),
+        );
+        listTagsResult.TagList;
+        return {
+          instanceIdentifier: instance.DBInstanceIdentifier!,
+          instanceClass: instance.DBInstanceClass!,
+          engine: instance.Engine!,
+          multiAZ: instance.MultiAZ!,
+          purchaseMethod: getPurchaseMethod(listTagsResult.TagList!),
+        };
+      }),
+    );
+    result = [...result, ...instances];
+    marker = describeDBInstancesResult.Marker;
+
+    if (!marker) {
+      break;
+    }
+  }
+
+  return result;
 };
 
 export const groupDBInstancesByPurchaseMethod = (
